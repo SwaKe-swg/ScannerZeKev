@@ -148,37 +148,29 @@ async def live_pnl_monitor():
                 if won:
                     titolo = "Chiusura in guadagno (paper)"
                     plain = (
-                        f"Hai recuperato il capitale investito e in piu "
-                        f"{c['pnl_sol']:+.4f} SOL (circa {pnl_usd:+.2f} $)."
+                        "Hai recuperato il capitale investito e in piu "
+                        + f"{c['pnl_sol']:+.4f} SOL (circa {pnl_usd:+.2f} $)."
                     )
                 else:
                     titolo = "Chiusura in perdita (paper)"
                     plain = (
                         f"Hai perso {abs(c['pnl_sol']):.4f} SOL "
-                        f"(circa {abs(pnl_usd):.2f} $) su {buy:.4f} SOL investiti. "
-                        f"Niente soldi veri: e solo simulazione."
+                        + f"(circa {abs(pnl_usd):.2f} $) su {buy:.4f} SOL investiti. "
+                        + "Niente soldi veri: e solo simulazione."
                     )
-                msg = (
-                    f"<b>{titolo}</b>
-"
-                    f"Token: <b>${c['symbol']}</b>
-
-"
-                    f"{plain}
-
-"
-                    f"<b>Perche ha chiuso:</b> {status}
-"
-                    f"<b>Variazione prezzo:</b> {c['pnl_pct']:+.2f}% "
-                    f"(gia tolte fee e slippage)
-"
-                    f"<b>Soldi liberi ora:</b> "
-                    f"{virtual_wallet.get_balance():.4f} SOL
-
-"
-                    f"<i>Regole attuali: stop loss -12%, take profit +50%, "
-                    f"trailing se era salito; ogni ingresso 0.02 SOL.</i>"
-                )
+                lines = [
+                    f"<b>{titolo}</b>",
+                    f"Token: <b>${c['symbol']}</b>",
+                    "",
+                    plain,
+                    "",
+                    f"<b>Perche ha chiuso:</b> {status}",
+                    f"<b>Variazione prezzo:</b> {c['pnl_pct']:+.2f}% (gia tolte fee e slippage)",
+                    f"<b>Soldi liberi ora:</b> {virtual_wallet.get_balance():.4f} SOL",
+                    "",
+                    "<i>Regole attuali: stop loss -12%, take profit +50%, trailing se era salito; ogni ingresso 0.02 SOL.</i>",
+                ]
+                msg = chr(10).join(lines)
                 await send_telegram_msg(client, msg)
 
             if report_counter >= 15 and open_pos:
