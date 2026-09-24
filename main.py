@@ -10,24 +10,36 @@ try:
     from telegram_ui import build_trading_links_text
 except ImportError:
     def build_trading_links_text(token_address: str) -> str:
-        return f"ðŸ”— <a href='https://dexscreener.com/solana/{token_address}'>DexScreener</a>"
+        return (
+            f'Link: <a href="https://dexscreener.com/solana/{token_address}">DexScreener</a>'
+        )
 
 from listeners.dex_listener import start_dex_listener
 from listeners.twitter_listener import start_twitter_listener
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 helius_url = getattr(Config, "HELIUS_RPC_URL", "")
 anti_rug = AntiRugEngine(rpc_url=helius_url)
 
+START_BUDGET = float(getattr(Config, "VIRTUAL_SOL_BALANCE", 0.30))
 virtual_wallet = PositionManager(
-    initial_balance=getattr(Config, "VIRTUAL_SOL_BALANCE", 0.30),
-    trade_amount=getattr(Config, "TRADE_AMOUNT_SOL", 0.03)
+    initial_balance=START_BUDGET,
+    trade_amount=getattr(Config, "TRADE_AMOUNT_SOL", 0.03),
 )
+
+
+def _pnl_word(pct: float) -> str:
+    if pct > 0.5:
+        return "in guadagno"
+    if pct < -0.5:
+        return "in perdita"
+    return "quasi in pari"
+
 
 async def send_telegram_msg(client: httpx.AsyncClient, text: str):
     token = getattr(Config, "TELEGRAM_BOT_TOKEN", "")
@@ -36,26 +48,51 @@ async def send_telegram_msg(client: httpx.AsyncClient, text: str):
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        res = await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=5)
+        res = await client.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=5,
+        )
         if res.status_code != 200:
-            logger.warning(f"âš ï¸ Telegram Error ({res.status_code}): Verifica TOKEN e CHAT_ID in config.py")
+            logger.warning(
+                f"Telegram Error ({res.status_code}): verifica TOKEN e CHAT_ID"
+            )
     except Exception as e:
         logger.error(f"Errore invio Telegram: {e}")
 
+
 async def send_startup_notification():
-    mode = "REAL TRADING (SOL)" if Config.REAL_TRADING else "PAPER TRADING (REALISTICO)"
+    mode = (
+        "REALE (usa SOL veri)"
+        if Config.REAL_TRADING
+        else "PAPER (simulazione, niente SOL veri)"
+    )
+    tp = getattr(Config, "TAKE_PROFIT_PCT", 100.0)
+    sl = getattr(Config, "STOP_LOSS_PCT", -30.0)
     msg = (
-        f"ðŸŸ¢ <b>Zephyr Bot 2.0 Ultra-Realistic!</b>\n\n"
-        f"<b>ModalitÃ :</b> {mode}\n"
-        f"<b>Budget Iniziale:</b> {virtual_wallet.get_balance():.4f} SOL\n"
-        f"<b>Trade Size:</b> {virtual_wallet.trade_amount:.4f} SOL\n"
-        f"<b>Slippage Applicato:</b> {Config.SLIPPAGE_BPS / 100}%\n"
-        f"<b>Priority Fee / Tx:</b> {Config.ESTIMATED_FEE_SOL} SOL\n"
-        f"<b>RPC Auth:</b> Helius Mainnet Connected\n"
-        f"<b>Prezzi:</b> DexScreener Live API"
+        f"<b>Zephyr Bot 2.0 avviato</b>\n\n"
+        f"<b>Modalita:</b> {mode}\n"
+        f"<b>Budget di partenza:</b> {START_BUDGET:.4f} SOL "
+        f"(soldi virtuali con cui inizia)\n"
+        f"<b>Ogni ingresso:</b> {virtual_wallet.trade_amount:.4f} SOL "
+        f"(+{Config.ESTIMATED_FEE_SOL} SOL di fee stimate)\n"
+        f"<b>Slippage stimato:</b> {Config.SLIPPAGE_BPS / 100}% "
+        f"(peggioramento prezzo all'ingresso/uscita)\n\n"
+        f"<b>Quando chiude da solo:</b>\n"
+        f"• Take profit a <b>+{tp:.0f}%</b> (raddoppio → chiude in guadagno)\n"
+        f"• Stop loss a <b>{sl:.0f}%</b> (taglia la perdita)\n"
+        f"• Trailing stop se prima era salito molto "
+        f"(protegge parte del guadagno)\n\n"
+        f"Ogni ~3 minuti arriva un report sul portafoglio."
     )
     async with httpx.AsyncClient() as client:
         await send_telegram_msg(client, msg)
+
 
 async def process_detected_token(token_data: dict):
     token_address = token_data.get("address", "")
@@ -64,7 +101,7 @@ async def process_detected_token(token_data: dict):
 
     is_safe, reason = await anti_rug.verify_token_safety(token_address, token_data)
     if not is_safe:
-        logger.warning(f"â›” [RUGPULL EVITATO] ${symbol} scartato -> {reason}")
+        logger.warning(f"[RUGPULL EVITATO] ${symbol} scartato -> {reason}")
         return
 
     trade_info = virtual_wallet.open_virtual_trade(token_address, symbol, price_usd)
@@ -73,16 +110,22 @@ async def process_detected_token(token_data: dict):
 
     links_html = build_trading_links_text(token_address)
     msg = (
-        f"ðŸš€ <b>TRADE APERTO!</b>\n\n"
+        f"<b>Nuova posizione PAPER aperta</b>\n\n"
         f"<b>Token:</b> ${symbol}\n"
-        f"<b>Prezzo Ingresso (incl. Slippage):</b> ${trade_info['entry_price_usd']:.8f}\n"
-        f"<b>Investiti:</b> {trade_info['buy_sol']} SOL (+{Config.ESTIMATED_FEE_SOL} SOL Fee)\n"
-        f"<b>Saldo Libero Rimasto:</b> {virtual_wallet.get_balance():.4f} SOL\n\n"
+        f"<b>Prezzo di ingresso (con slippage):</b> "
+        f"${trade_info['entry_price_usd']:.8f}\n"
+        f"<b>Quanto hai messo:</b> {trade_info['buy_sol']} SOL "
+        f"(+{Config.ESTIMATED_FEE_SOL} SOL fee)\n"
+        f"<b>Soldi ancora liberi:</b> {virtual_wallet.get_balance():.4f} SOL "
+        f"(non investiti, pronti per altri ingressi)\n\n"
+        f"Questa non e ancora un guadagno: conta solo quando arriva "
+        f"<b>TRADE CHIUSO</b> in take profit / stop.\n\n"
         f"{links_html}"
     )
 
     async with httpx.AsyncClient() as client:
         await send_telegram_msg(client, msg)
+
 
 async def live_pnl_monitor():
     report_counter = 0
@@ -92,40 +135,82 @@ async def live_pnl_monitor():
             report_counter += 1
 
             open_pos, closed_pos = await virtual_wallet.update_positions_pnl(
-                client, 
+                client,
                 take_profit_pct=getattr(Config, "TAKE_PROFIT_PCT", 100.0),
-                initial_stop_loss_pct=getattr(Config, "STOP_LOSS_PCT", -30.0)
+                initial_stop_loss_pct=getattr(Config, "STOP_LOSS_PCT", -30.0),
             )
 
             for c in closed_pos:
                 status = c["status"]
                 pnl_usd = c["pnl_sol"] * 135
-                
+                won = c["pnl_sol"] >= 0
+                esito_human = (
+                    "Hai guadagnato (paper)"
+                    if won
+                    else "Hai perso (paper)"
+                )
                 msg = (
-                    f"ðŸŽ¯ <b>TRADE CHIUSO: ${c['symbol']}</b>\n\n"
-                    f"<b>Esito:</b> {status}\n"
-                    f"<b>PnL Netto (dopo Fees & Slippage):</b> {c['pnl_pct']:+.2f}%\n"
-                    f"<b>Guadagno/Perdita Netta:</b> {c['pnl_sol']:+.4f} SOL (~{pnl_usd:+.2f}$)\n"
-                    f"<b>Nuovo Saldo Libero:</b> {virtual_wallet.get_balance():.4f} SOL"
+                    f"<b>Posizione chiusa: ${c['symbol']}</b>\n\n"
+                    f"<b>Esito:</b> {esito_human}\n"
+                    f"<b>Motivo chiusura:</b> {status}\n"
+                    f"<b>Risultato %:</b> {c['pnl_pct']:+.2f}% "
+                    f"(dopo fee e slippage)\n"
+                    f"<b>Risultato in SOL:</b> {c['pnl_sol']:+.4f} SOL "
+                    f"(circa ~{pnl_usd:+.2f} $)\n"
+                    f"<b>Soldi liberi ora:</b> "
+                    f"{virtual_wallet.get_balance():.4f} SOL\n\n"
+                    f"Questo e il guadagno/perdita 'ufficiale' della simulazione."
                 )
                 await send_telegram_msg(client, msg)
 
             if report_counter >= 12 and open_pos:
                 report_counter = 0
                 total_eq = virtual_wallet.get_total_equity_sol()
+                free = virtual_wallet.get_balance()
+                in_pos = total_eq - free
+                vs_start = total_eq - START_BUDGET
+                vs_start_pct = (vs_start / START_BUDGET) * 100.0 if START_BUDGET else 0.0
+
                 lines = [
-                    f"ðŸ“Š <b>REPORT PORTAFOGLIO REALISTICO</b>",
-                    f"<b>Valore Totale Equity:</b> {total_eq:.4f} SOL",
-                    f"<b>Saldo Libero:</b> {virtual_wallet.get_balance():.4f} SOL\n"
+                    "<b>Report portafoglio PAPER</b> (ogni ~3 min)",
+                    "",
+                    f"<b>Totale stimato ora:</b> {total_eq:.4f} SOL",
+                    "  = soldi liberi + valore attuale delle posizioni aperte",
+                    f"<b>Soldi liberi:</b> {free:.4f} SOL (non investiti)",
+                    f"<b>Nelle posizioni:</b> {in_pos:.4f} SOL (ancora aperti)",
+                    (
+                        f"<b>Vs budget iniziale ({START_BUDGET:.2f} SOL):</b> "
+                        f"{vs_start:+.4f} SOL ({vs_start_pct:+.1f}%)"
+                    ),
+                    "",
+                    "<b>Posizioni aperte</b> (non ancora chiuse):",
                 ]
                 for p in open_pos:
-                    lines.append(f"â€¢ <b>${p['symbol']}</b>: {p['pnl_pct']:+.2f}% PnL (Max: {p['max_pnl_reached']:+.1f}%)")
-                
-                report_msg = "\n".join(lines)
-                await send_telegram_msg(client, report_msg)
+                    pct = p["pnl_pct"]
+                    peak = p["max_pnl_reached"]
+                    word = _pnl_word(pct)
+                    lines.append(
+                        f"• <b>${p['symbol']}</b> — ora {pct:+.2f}% ({word})"
+                    )
+                    lines.append(
+                        f"   Picco visto finora: {peak:+.1f}% "
+                        f"(massimo guadagno toccato senza aver chiuso)"
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "<i>PnL% = quanto sei sopra/sotto il prezzo di ingresso.</i>",
+                        "<i>Il guadagno conta davvero solo a TRADE CHIUSO "
+                        "(TP +100%, SL -30% o trailing).</i>",
+                    ]
+                )
+                await send_telegram_msg(client, "\n".join(lines))
+
 
 async def main():
-    logger.info("ðŸš€ Avvio Zephyr Bot 2.0 (Helius RPC, Slippage, Fees, DexScreener Price API)...")
+    logger.info(
+        "Avvio Zephyr Bot 2.0 (Helius RPC, Slippage, Fees, DexScreener Price API)..."
+    )
     await send_startup_notification()
 
     asyncio.create_task(live_pnl_monitor())
@@ -134,6 +219,7 @@ async def main():
 
     while True:
         await asyncio.sleep(3600)
+
 
 if __name__ == "__main__":
     try:

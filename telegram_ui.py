@@ -6,10 +6,10 @@ def build_trading_links_text(token_address: str) -> str:
     dex_url = f"https://dexscreener.com/solana/{token_address}"
 
     return (
-        f"🔗 <b>Quick Trading Links:</b>\n"
-        f"• <a href='{axiom_url}'>⚡ Axiom</a>\n"
-        f"• <a href='{photon_url}'>🚀 Photon</a>\n"
-        f"• <a href='{bullx_url}'>🎯 BullX</a>\n"
-        f"• <a href='{pump_url}'>💊 Pump.fun</a>\n"
-        f"• <a href='{dex_url}'>📈 DexScreener</a>"
+        "<b>Link rapidi (solo per guardare il token):</b>\n"
+        f'• <a href="{axiom_url}">Axiom</a>\n'
+        f'• <a href="{photon_url}">Photon</a>\n'
+        f'• <a href="{bullx_url}">BullX</a>\n'
+        f'• <a href="{pump_url}">Pump.fun</a>\n'
+        f'• <a href="{dex_url}">DexScreener</a>'
     )
