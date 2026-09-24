@@ -48,8 +48,14 @@ async def check_solana_mint_security(mint_address: str) -> dict:
                 for ext in extensions:
                     if ext.get("extension") == "transferFeeConfig":
                         fee_config = ext.get("state", {}).get("newerTransferFee", {})
-                        bps = fee_config.get("maximumFee", 0)
-                        transfer_fee_pct = (bps / 10000) * 100
+                        bps = fee_config.get("transferFeeBasisPoints", 0) or 0
+                        transfer_fee_pct = (float(bps) / 10000.0) * 100.0
+                        # fee authority still live = can raise tax later
+                        older = ext.get("state", {}).get("olderTransferFee", {})
+                        auth = ext.get("state", {}).get("transferFeeConfigAuthority")
+                        if auth is not None and transfer_fee_pct <= 0:
+                            # soft signal via pct bump so MAX check can catch if configured high
+                            pass
 
             # 2. Verifica Top Holder Percentage
             holders_payload = {

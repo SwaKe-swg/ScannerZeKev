@@ -6,7 +6,7 @@ import httpx
 from config import Config
 from anti_rug_engine import AntiRugEngine
 from risk_manager import PositionManager
-from filters.blacklist import add_blacklist, is_blacklisted
+from filters.blacklist import add_blacklist, add_permanent, is_blacklisted
 
 try:
     from telegram_ui import build_trading_links_text
@@ -23,17 +23,21 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+# Avoid leaking bot tokens in httpx URL logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 helius_url = getattr(Config, "HELIUS_RPC_URL", "")
 anti_rug = AntiRugEngine(rpc_url=helius_url)
 
-START_BUDGET = float(getattr(Config, "VIRTUAL_SOL_BALANCE", 0.30))
+START_BUDGET = float(getattr(Config, "VIRTUAL_SOL_BALANCE", 0.98))
+BOT_VER = getattr(Config, "BOT_VERSION", "2.3")
 last_entry_ts = 0.0
 
 virtual_wallet = PositionManager(
     initial_balance=START_BUDGET,
-    trade_amount=getattr(Config, "TRADE_AMOUNT_SOL", 0.015),
+    trade_amount=getattr(Config, "TRADE_AMOUNT_SOL", 0.02),
 )
 
 
@@ -97,11 +101,14 @@ async def send_startup_notification():
     )
     tp = getattr(Config, "TAKE_PROFIT_PCT", 35.0)
     sl = getattr(Config, "STOP_LOSS_PCT", -15.0)
+    eur_approx = START_BUDGET * 102.16
+    confirm_on = getattr(Config, "CONFIRM_ENTRY", True)
+    confirm_s = getattr(Config, "CONFIRM_ENTRY_SECONDS", 20)
     lines = [
-        "🚀 <b>Zephyr Bot 2.2</b>",
+        f"🚀 <b>Zephyr Bot {BOT_VER}</b>",
         "",
         f"🎛️ <b>Modalita:</b> {mode}",
-        f"💰 <b>Budget:</b> {START_BUDGET:.4f} SOL",
+        f"💰 <b>Budget paper:</b> {START_BUDGET:.4f} SOL (~{eur_approx:.0f} EUR @ 102.16)",
         (
             f"🎯 <b>Ingresso:</b> {virtual_wallet.trade_amount:.4f} SOL "
             f"(max {getattr(Config, 'MAX_OPEN_POSITIONS', 2)} aperti)"
@@ -114,14 +121,16 @@ async def send_startup_notification():
             f"• market cap ${getattr(Config, 'MIN_MARKET_CAP', 20000):,.0f}"
             f"–${getattr(Config, 'MAX_MARKET_CAP', 250000):,.0f}"
         ),
-        f"• prezzo in salita ≥ +{getattr(Config, 'MIN_PRICE_CHANGE_M5', 2.0):.0f}% (5m)",
+        f"• prezzo in salita ≥ +{getattr(Config, 'MIN_PRICE_CHANGE_M5', 3.0):.0f}% (5m)",
         f"• score ≥ {getattr(Config, 'MIN_ENTRY_SCORE', 70)} + buy pressure",
-        "• niente blacklist (token gia stoppati)",
+        "• anti-scam AUTO (mint/freeze/fee/RugCheck/top holder)",
+        f"• CONFIRM_ENTRY {'ON' if confirm_on else 'OFF'} ({confirm_s:.0f}s re-check)",
+        "• blacklist permanente $NP/$WIRE + post-SL",
         "",
         f"🚪 <b>Uscite:</b> TP +{tp:.0f}% | SL {sl:.0f}% | trailing da +6%",
         "",
-        "🧠 <i>Lezione $WIRE: tanti buy con prezzo gia in calo = trappola. "
-        "Ora rifiutiamo i falling knife.</i>",
+        "🧠 <i>Lezione $NP: SL -21.9% con peak +0% = never-green. "
+        "Ora momentum ≥3%, confirm delay, anti-scam fail-closed.</i>",
     ]
     async with httpx.AsyncClient() as client:
         await send_telegram_msg(client, chr(10).join(lines))
@@ -141,6 +150,21 @@ async def process_detected_token(token_data: dict):
     if not is_safe:
         logger.warning(f"[SKIP] ${symbol} -> {reason}")
         return
+
+    if getattr(Config, "CONFIRM_ENTRY", True):
+        from filters.anti_scam_engine import confirm_entry_still_green
+        ok_c, why_c, detail = await confirm_entry_still_green(
+            token_address,
+            float(price_usd or 0),
+            float(token_data.get("price_change_m5", 0) or 0),
+        )
+        if not ok_c:
+            logger.warning(f"[CONFIRM SKIP] ${symbol} -> {why_c} detail={detail}")
+            return
+        if detail.get("confirm_price"):
+            price_usd = float(detail["confirm_price"])
+            token_data["price_usd"] = price_usd
+            token_data["price_change_m5"] = float(detail.get("confirm_chg_m5") or 0)
 
     global last_entry_ts
     now = time.time()
@@ -193,9 +217,7 @@ async def live_pnl_monitor():
                 buy = c.get("buy_sol", 0.0)
                 won = c["pnl_sol"] >= 0
                 addr = c.get("address") or c.get("token_address") or ""
-                # positions may store key differently — risk_manager uses positions dict by addr
                 if not won:
-                    # find address from positions was removed; use symbol blacklist at least
                     add_blacklist(addr, c.get("symbol", ""), reason=status)
 
                 if won:
@@ -211,7 +233,6 @@ async def live_pnl_monitor():
                         f"(circa {abs(pnl_usd):.2f} $) su {buy:.4f} SOL. "
                         f"Soldi veri: zero (simulazione)."
                     )
-                    # blacklist by scanning - open_virtual stores address as key; copy onto pos
                 lesson = _loss_lesson(c)
                 lines = [
                     titolo,
@@ -226,7 +247,7 @@ async def live_pnl_monitor():
                     "",
                     f"🧠 <b>Cosa impariamo:</b> {lesson}",
                     "",
-                    "<i>Regole 2.2: no falling knife, blacklist post-SL, score≥70, emoji on.</i>",
+                    f"<i>Regole {BOT_VER}: no falling knife, CONFIRM_ENTRY, anti-scam AUTO, blacklist post-SL.</i>",
                 ]
                 await send_telegram_msg(client, chr(10).join(lines))
 
@@ -265,7 +286,24 @@ async def live_pnl_monitor():
 
 
 async def main():
-    logger.info("Avvio Zephyr Bot 2.2...")
+    add_permanent(
+        address="H61eoVSK7XmGmAA3NTt5d3Rg4WDxvqMfqpWSeZSJk1aG",
+        symbol="NP",
+        reason="never_green_sl_lesson_v2.3",
+    )
+    add_permanent(
+        address="HExJd47752Q2Nqm1EpMDrvfPKWdeVtZ3ATh1TukU1tYn",
+        symbol="WIRE",
+        reason="falling_knife_lesson_v2.2",
+    )
+    assert Config.REAL_TRADING is False, "REAL_TRADING must stay False"
+    logger.info(
+        "Avvio Zephyr Bot %s | budget=%.4f SOL | trade=%.4f | REAL_TRADING=%s",
+        BOT_VER,
+        START_BUDGET,
+        virtual_wallet.trade_amount,
+        Config.REAL_TRADING,
+    )
     await send_startup_notification()
     asyncio.create_task(live_pnl_monitor())
     asyncio.create_task(start_dex_listener(process_detected_token))

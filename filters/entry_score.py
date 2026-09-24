@@ -50,7 +50,7 @@ def score_pair(m: dict) -> int:
         score += 25
     elif chg >= 5:
         score += 18
-    elif chg >= 2:
+    elif chg >= 3:
         score += 10
     elif chg < 0:
         score -= 25
@@ -92,7 +92,7 @@ def hard_reject(m: dict) -> tuple[bool, str]:
     if m["sells_m5"] > 0 and m["buys_m5"] < m["sells_m5"] * Config.MIN_BUY_SELL_RATIO:
         return True, "sell_pressure"
     # Falling knife: WIRE lesson — high activity while dumping
-    min_chg = float(getattr(Config, "MIN_PRICE_CHANGE_M5", 2.0))
+    min_chg = float(getattr(Config, "MIN_PRICE_CHANGE_M5", 3.0))
     max_chg = float(getattr(Config, "MAX_PRICE_CHANGE_M5", 80.0))
     if m["price_change_m5"] < min_chg:
         return True, f"momentum_down({m['price_change_m5']:+.1f}%)"
