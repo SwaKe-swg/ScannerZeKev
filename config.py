@@ -30,7 +30,10 @@ class Config:
     MIN_BUYS_M5 = int(os.getenv("MIN_BUYS_M5", "8"))
     MIN_BUY_SELL_RATIO = float(os.getenv("MIN_BUY_SELL_RATIO", "1.2"))
     MIN_VOLUME_M5 = float(os.getenv("MIN_VOLUME_M5", "2000"))
-    MIN_ENTRY_SCORE = int(os.getenv("MIN_ENTRY_SCORE", "60"))
+    MIN_ENTRY_SCORE = int(os.getenv("MIN_ENTRY_SCORE", "70"))
+    MIN_PRICE_CHANGE_M5 = float(os.getenv("MIN_PRICE_CHANGE_M5", "2.0"))
+    MAX_PRICE_CHANGE_M5 = float(os.getenv("MAX_PRICE_CHANGE_M5", "80.0"))
+    BLACKLIST_HOURS = float(os.getenv("BLACKLIST_HOURS", "6.0"))
     MAX_SYMBOL_LENGTH = int(os.getenv("MAX_SYMBOL_LENGTH", "12"))
     MAX_AGE_MINUTES = int(os.getenv("MAX_AGE_MINUTES", "180"))
     REQUIRE_SOCIALS = os.getenv("REQUIRE_SOCIALS", "0") == "1"

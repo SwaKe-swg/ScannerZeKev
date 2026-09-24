@@ -28,6 +28,7 @@ class PositionManager:
 
         trade_info = {
             "symbol": symbol,
+            "address": token_address,
             "token_address": token_address,
             "buy_sol": self.trade_amount,
             "entry_price_usd": execution_price,

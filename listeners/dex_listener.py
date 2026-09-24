@@ -3,6 +3,7 @@ import logging
 import httpx
 
 from filters.entry_score import hard_reject, pair_metrics, score_pair
+from filters.blacklist import is_blacklisted
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,10 @@ async def start_dex_listener(callback):
                                 main_pair = pairs[0]
                                 m = pair_metrics(main_pair)
                                 m["address"] = token_address
+                                bl, blwhy = is_blacklisted(token_address, m["symbol"])
+                                if bl:
+                                    rejected += 1
+                                    continue
                                 rej, why = hard_reject(m)
                                 if rej:
                                     rejected += 1
@@ -79,6 +84,8 @@ async def start_dex_listener(callback):
                                     "sells_m5": m["sells_m5"],
                                     "volume_m5": m["volume_m5"],
                                     "score": sc,
+                                    "price_change_m5": m["price_change_m5"],
+                                    "price_change_h1": m["price_change_h1"],
                                     "holders": [],
                                     "trades": [],
                                 }

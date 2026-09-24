@@ -6,6 +6,7 @@ import httpx
 from config import Config
 from anti_rug_engine import AntiRugEngine
 from risk_manager import PositionManager
+from filters.blacklist import add_blacklist, is_blacklisted
 
 try:
     from telegram_ui import build_trading_links_text
@@ -32,7 +33,7 @@ last_entry_ts = 0.0
 
 virtual_wallet = PositionManager(
     initial_balance=START_BUDGET,
-    trade_amount=getattr(Config, "TRADE_AMOUNT_SOL", 0.03),
+    trade_amount=getattr(Config, "TRADE_AMOUNT_SOL", 0.015),
 )
 
 
@@ -42,6 +43,25 @@ def _pnl_word(pct: float) -> str:
     if pct < -0.5:
         return "in perdita"
     return "quasi in pari"
+
+
+def _loss_lesson(c: dict) -> str:
+    status = (c.get("status") or "").upper()
+    peak = float(c.get("max_pnl_reached") or 0)
+    pct = float(c.get("pnl_pct") or 0)
+    if "STOP LOSS" in status:
+        if peak < 3:
+            return (
+                "Lezione: entrato gia in fase debole (mai andato davvero in plus). "
+                "Da ora evitiamo token in calo nei 5 min e quelli gia stoppati."
+            )
+        return (
+            f"Lezione: era salito fino a {peak:+.1f}% poi ha dumpato a {pct:+.1f}%. "
+            "Trailing piu stretto e blacklist dopo lo stop."
+        )
+    if "TRAILING" in status:
+        return "Trailing ha chiuso per proteggere: meglio un piccolo plus/minus che un crollo."
+    return "Chiusura automatica secondo le regole."
 
 
 async def send_telegram_msg(client: httpx.AsyncClient, text: str):
@@ -71,41 +91,40 @@ async def send_telegram_msg(client: httpx.AsyncClient, text: str):
 
 async def send_startup_notification():
     mode = (
-        "REALE (usa SOL veri)"
+        "REALE (SOL veri)"
         if Config.REAL_TRADING
-        else "PAPER (simulazione, niente SOL veri)"
+        else "PAPER (solo simulazione)"
     )
     tp = getattr(Config, "TAKE_PROFIT_PCT", 35.0)
     sl = getattr(Config, "STOP_LOSS_PCT", -15.0)
     lines = [
-        "<b>Zephyr Bot 2.1 — filtri piu stretti</b>",
+        "🚀 <b>Zephyr Bot 2.2</b>",
         "",
-        f"<b>Modalita:</b> {mode}",
-        f"<b>Budget:</b> {START_BUDGET:.4f} SOL",
+        f"🎛️ <b>Modalita:</b> {mode}",
+        f"💰 <b>Budget:</b> {START_BUDGET:.4f} SOL",
         (
-            f"<b>Ogni ingresso:</b> {virtual_wallet.trade_amount:.4f} SOL "
-            f"(max {getattr(Config, 'MAX_OPEN_POSITIONS', 2)} posizioni aperte)"
+            f"🎯 <b>Ingresso:</b> {virtual_wallet.trade_amount:.4f} SOL "
+            f"(max {getattr(Config, 'MAX_OPEN_POSITIONS', 2)} aperti)"
         ),
-        f"<b>Cooldownoldown:</b> {getattr(Config, 'COOLDOWN_SECONDS', 90)}s tra un buy e l'altro",
+        f"⏱️ <b>Cooldownoldown:</b> {getattr(Config, 'COOLDOWN_SECONDS', 90)}s",
         "",
-        "<b>Entra solo se:</b>",
-        f"• liquidita >= ${getattr(Config, 'MIN_LIQUIDITY', 12000):,.0f}",
+        "✅ <b>Entra solo se:</b>",
+        f"• liquidita ≥ ${getattr(Config, 'MIN_LIQUIDITY', 12000):,.0f}",
         (
-            f"• market cap tra ${getattr(Config, 'MIN_MARKET_CAP', 20000):,.0f} "
-            f"e ${getattr(Config, 'MAX_MARKET_CAP', 250000):,.0f}"
+            f"• market cap ${getattr(Config, 'MIN_MARKET_CAP', 20000):,.0f}"
+            f"–${getattr(Config, 'MAX_MARKET_CAP', 250000):,.0f}"
         ),
-        f"• almeno {getattr(Config, 'MIN_BUYS_M5', 8)} buy in 5 min + volume",
-        f"• score >= {getattr(Config, 'MIN_ENTRY_SCORE', 60)}",
-        "• mint/freeze authority off",
+        f"• prezzo in salita ≥ +{getattr(Config, 'MIN_PRICE_CHANGE_M5', 2.0):.0f}% (5m)",
+        f"• score ≥ {getattr(Config, 'MIN_ENTRY_SCORE', 70)} + buy pressure",
+        "• niente blacklist (token gia stoppati)",
         "",
-        f"<b>Uscite:</b> TP +{tp:.0f}% | SL {sl:.0f}% | trailing da +6%",
+        f"🚪 <b>Uscite:</b> TP +{tp:.0f}% | SL {sl:.0f}% | trailing da +6%",
         "",
-        "<i>Nota: sui meme coin molti bot perdono in media. Questi filtri "
-        "servono a perdere meno spesso, non a garantire guadagno.</i>",
+        "🧠 <i>Lezione $WIRE: tanti buy con prezzo gia in calo = trappola. "
+        "Ora rifiutiamo i falling knife.</i>",
     ]
-    msg = chr(10).join(lines)
     async with httpx.AsyncClient() as client:
-        await send_telegram_msg(client, msg)
+        await send_telegram_msg(client, chr(10).join(lines))
 
 
 async def process_detected_token(token_data: dict):
@@ -113,9 +132,14 @@ async def process_detected_token(token_data: dict):
     symbol = token_data.get("symbol", "UNKNOWN")
     price_usd = token_data.get("price_usd", 0)
 
+    bl, why = is_blacklisted(token_address, symbol)
+    if bl:
+        logger.info(f"Blacklist skip ${symbol} ({why})")
+        return
+
     is_safe, reason = await anti_rug.verify_token_safety(token_address, token_data)
     if not is_safe:
-        logger.warning(f"[RUGPULL EVITATO] ${symbol} scartato -> {reason}")
+        logger.warning(f"[SKIP] ${symbol} -> {reason}")
         return
 
     global last_entry_ts
@@ -130,24 +154,24 @@ async def process_detected_token(token_data: dict):
         return
 
     last_entry_ts = now
-
+    chg = token_data.get("price_change_m5", 0)
+    score = token_data.get("score", 0)
     links_html = build_trading_links_text(token_address)
-    msg = (
-        f"<b>Nuova posizione PAPER aperta</b>\n\n"
-        f"<b>Token:</b> ${symbol}\n"
-        f"<b>Prezzo di ingresso (con slippage):</b> "
-        f"${trade_info['entry_price_usd']:.8f}\n"
-        f"<b>Quanto hai messo:</b> {trade_info['buy_sol']} SOL "
-        f"(+{Config.ESTIMATED_FEE_SOL} SOL fee)\n"
-        f"<b>Soldi ancora liberi:</b> {virtual_wallet.get_balance():.4f} SOL "
-        f"(non investiti, pronti per altri ingressi)\n\n"
-        f"Questa non e ancora un guadagno: conta solo quando arriva "
-        f"<b>TRADE CHIUSO</b> in take profit / stop.\n\n"
-        f"{links_html}"
-    )
-
+    lines = [
+        "🟢 <b>Nuova posizione PAPER</b>",
+        "",
+        f"🪙 <b>Token:</b> ${symbol}",
+        f"📥 <b>Ingresso:</b> ${trade_info['entry_price_usd']:.8f}",
+        f"💵 <b>Investiti:</b> {trade_info['buy_sol']} SOL (+{Config.ESTIMATED_FEE_SOL} fee)",
+        f"🏦 <b>Liberi:</b> {virtual_wallet.get_balance():.4f} SOL",
+        f"📊 <b>Score:</b> {score} | momentum 5m: {chg:+.1f}%",
+        "",
+        "⏳ Non e ancora un guadagno: conta solo a chiusura TP/SL.",
+        "",
+        links_html,
+    ]
     async with httpx.AsyncClient() as client:
-        await send_telegram_msg(client, msg)
+        await send_telegram_msg(client, chr(10).join(lines))
 
 
 async def live_pnl_monitor():
@@ -159,8 +183,8 @@ async def live_pnl_monitor():
 
             open_pos, closed_pos = await virtual_wallet.update_positions_pnl(
                 client,
-                take_profit_pct=getattr(Config, "TAKE_PROFIT_PCT", 100.0),
-                initial_stop_loss_pct=getattr(Config, "STOP_LOSS_PCT", -30.0),
+                take_profit_pct=getattr(Config, "TAKE_PROFIT_PCT", 35.0),
+                initial_stop_loss_pct=getattr(Config, "STOP_LOSS_PCT", -15.0),
             )
 
             for c in closed_pos:
@@ -168,33 +192,43 @@ async def live_pnl_monitor():
                 pnl_usd = c["pnl_sol"] * 135
                 buy = c.get("buy_sol", 0.0)
                 won = c["pnl_sol"] >= 0
+                addr = c.get("address") or c.get("token_address") or ""
+                # positions may store key differently — risk_manager uses positions dict by addr
+                if not won:
+                    # find address from positions was removed; use symbol blacklist at least
+                    add_blacklist(addr, c.get("symbol", ""), reason=status)
+
                 if won:
-                    titolo = "Chiusura in guadagno (paper)"
+                    titolo = "🟢 <b>Chiusura in GUADAGNO</b> (paper)"
                     plain = (
-                        "Hai recuperato il capitale investito e in piu "
-                        + f"{c['pnl_sol']:+.4f} SOL (circa {pnl_usd:+.2f} $)."
+                        f"✅ Hai messo in tasca {c['pnl_sol']:+.4f} SOL "
+                        f"(circa {pnl_usd:+.2f} $) su {buy:.4f} SOL."
                     )
                 else:
-                    titolo = "Chiusura in perdita (paper)"
+                    titolo = "🔴 <b>Chiusura in PERDITA</b> (paper)"
                     plain = (
-                        f"Hai perso {abs(c['pnl_sol']):.4f} SOL "
-                        + f"(circa {abs(pnl_usd):.2f} $) su {buy:.4f} SOL investiti. "
-                        + "Niente soldi veri: e solo simulazione."
+                        f"❌ Hai perso {abs(c['pnl_sol']):.4f} SOL "
+                        f"(circa {abs(pnl_usd):.2f} $) su {buy:.4f} SOL. "
+                        f"Soldi veri: zero (simulazione)."
                     )
+                    # blacklist by scanning - open_virtual stores address as key; copy onto pos
+                lesson = _loss_lesson(c)
                 lines = [
-                    f"<b>{titolo}</b>",
-                    f"Token: <b>${c['symbol']}</b>",
+                    titolo,
+                    f"🪙 Token: <b>${c['symbol']}</b>",
                     "",
                     plain,
                     "",
-                    f"<b>Perche ha chiuso:</b> {status}",
-                    f"<b>Variazione prezzo:</b> {c['pnl_pct']:+.2f}% (gia tolte fee e slippage)",
-                    f"<b>Soldi liberi ora:</b> {virtual_wallet.get_balance():.4f} SOL",
+                    f"📌 <b>Perche ha chiuso:</b> {status}",
+                    f"📉 <b>Variazione:</b> {c['pnl_pct']:+.2f}% (dopo fee/slippage)",
+                    f"🏔️ <b>Picco visto:</b> {c.get('max_pnl_reached', 0):+.1f}%",
+                    f"🏦 <b>Liberi ora:</b> {virtual_wallet.get_balance():.4f} SOL",
                     "",
-                    "<i>Regole 2.1: SL -15%, TP +35%, max 2 posizioni, ingresso 0.015 SOL, filtri hard+score.</i>",
+                    f"🧠 <b>Cosa impariamo:</b> {lesson}",
+                    "",
+                    "<i>Regole 2.2: no falling knife, blacklist post-SL, score≥70, emoji on.</i>",
                 ]
-                msg = chr(10).join(lines)
-                await send_telegram_msg(client, msg)
+                await send_telegram_msg(client, chr(10).join(lines))
 
             if report_counter >= 15 and open_pos:
                 report_counter = 0
@@ -203,53 +237,39 @@ async def live_pnl_monitor():
                 in_pos = total_eq - free
                 vs_start = total_eq - START_BUDGET
                 vs_start_pct = (vs_start / START_BUDGET) * 100.0 if START_BUDGET else 0.0
-
                 lines = [
-                    "<b>Report portafoglio PAPER</b> (ogni ~2 min)",
+                    "📊 <b>Report portafoglio PAPER</b>",
                     "",
-                    f"<b>Totale stimato ora:</b> {total_eq:.4f} SOL",
-                    "  = soldi liberi + valore attuale delle posizioni aperte",
-                    f"<b>Soldi liberi:</b> {free:.4f} SOL (non investiti)",
-                    f"<b>Nelle posizioni:</b> {in_pos:.4f} SOL (ancora aperti)",
-                    (
-                        f"<b>Vs budget iniziale ({START_BUDGET:.2f} SOL):</b> "
-                        f"{vs_start:+.4f} SOL ({vs_start_pct:+.1f}%)"
-                    ),
+                    f"💼 <b>Totale stimato:</b> {total_eq:.4f} SOL",
+                    f"💵 <b>Liberi:</b> {free:.4f} SOL",
+                    f"📂 <b>Nelle posizioni:</b> {in_pos:.4f} SOL",
+                    f"📈 <b>Vs inizio:</b> {vs_start:+.4f} SOL ({vs_start_pct:+.1f}%)",
                     "",
-                    "<b>Posizioni aperte</b> (non ancora chiuse):",
+                    "📋 <b>Aperti:</b>",
                 ]
                 for p in open_pos:
                     pct = p["pnl_pct"]
                     peak = p["max_pnl_reached"]
-                    word = _pnl_word(pct)
+                    emoji = "🟢" if pct >= 0 else "🔴"
                     lines.append(
-                        f"• <b>${p['symbol']}</b> — ora {pct:+.2f}% ({word})"
-                    )
-                    lines.append(
-                        f"   Picco visto finora: {peak:+.1f}% "
-                        f"(massimo guadagno toccato senza aver chiuso)"
+                        f"{emoji} <b>${p['symbol']}</b> ora {pct:+.2f}% "
+                        f"({_pnl_word(pct)}) | picco {peak:+.1f}%"
                     )
                 lines.extend(
                     [
                         "",
-                        "<i>PnL% = quanto sei sopra/sotto il prezzo di ingresso.</i>",
-                        "<i>Il guadagno conta davvero solo a TRADE CHIUSO "
-                        "(TP +100%, SL -30% o trailing).</i>",
+                        "<i>Il guadagno conta solo a chiusura TP/trailing.</i>",
                     ]
                 )
-                await send_telegram_msg(client, "\n".join(lines))
+                await send_telegram_msg(client, chr(10).join(lines))
 
 
 async def main():
-    logger.info(
-        "Avvio Zephyr Bot 2.0 (Helius RPC, Slippage, Fees, DexScreener Price API)..."
-    )
+    logger.info("Avvio Zephyr Bot 2.2...")
     await send_startup_notification()
-
     asyncio.create_task(live_pnl_monitor())
     asyncio.create_task(start_dex_listener(process_detected_token))
     asyncio.create_task(start_twitter_listener(process_detected_token))
-
     while True:
         await asyncio.sleep(3600)
 

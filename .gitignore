@@ -8,3 +8,6 @@ venv/
 .venv/
 .vercel/
 *.log
+
+paper_blacklist.json
+
