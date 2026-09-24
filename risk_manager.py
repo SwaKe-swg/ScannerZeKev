@@ -12,6 +12,12 @@ class PositionManager:
         self.slippage_factor = 1.0 + (Config.SLIPPAGE_BPS / 10000.0) # 1.015 (+1.5% slippage)
 
     def open_virtual_trade(self, token_address: str, symbol: str, raw_price_usd: float) -> dict:
+        max_open = int(getattr(Config, "MAX_OPEN_POSITIONS", 2))
+        if len(self.positions) >= max_open:
+            logger.warning(f"Max posizioni aperte ({max_open}) raggiunto, skip ${symbol}")
+            return None
+        if token_address in self.positions:
+            return None
         total_cost = self.trade_amount + Config.ESTIMATED_FEE_SOL
         if self.balance < total_cost:
             logger.warning(f"âš ï¸ Saldo insufficiente ({self.balance:.4f} SOL) incluso fee ({Config.ESTIMATED_FEE_SOL} SOL) per ${symbol}")
@@ -84,13 +90,13 @@ class PositionManager:
                 dynamic_stop_loss = initial_stop_loss_pct
                 max_p = pos["max_pnl_reached"]
 
-                if max_p >= 40.0:
-                    dynamic_stop_loss = 20.0
-                elif max_p >= 25.0:
-                    dynamic_stop_loss = 10.0
-                elif max_p >= 15.0:
-                    dynamic_stop_loss = 5.0
-                elif max_p >= 8.0:
+                if max_p >= 30.0:
+                    dynamic_stop_loss = 15.0
+                elif max_p >= 20.0:
+                    dynamic_stop_loss = 8.0
+                elif max_p >= 12.0:
+                    dynamic_stop_loss = 3.0
+                elif max_p >= 6.0:
                     dynamic_stop_loss = 0.0
 
                 # Chiusura Posizioni

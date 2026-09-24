@@ -1,33 +1,53 @@
-﻿import logging
+import logging
 import httpx
+from config import Config
 
 logger = logging.getLogger(__name__)
+
 
 class AntiRugEngine:
     def __init__(self, rpc_url: str = ""):
         self.rpc_url = rpc_url
 
     async def verify_token_safety(self, token_address: str, dex_data: dict) -> tuple[bool, str]:
-        liquidity_usd = dex_data.get("liquidity_usd", 0)
-        fdv = dex_data.get("fdv", 0)
-        
-        if liquidity_usd < 8000:
-            return False, f"Liquidità troppo bassa (${liquidity_usd:,.0f} < $8,000)"
-        
-        if fdv > 0 and fdv < 15000:
-            return False, f"Market Cap (FDV) troppo basso (${fdv:,.0f} < $15,000)"
+        liquidity_usd = float(dex_data.get("liquidity_usd", 0) or 0)
+        fdv = float(dex_data.get("fdv", 0) or dex_data.get("market_cap", 0) or 0)
+        buys = int(dex_data.get("buys_m5", 0) or 0)
+        sells = int(dex_data.get("sells_m5", 0) or 0)
+        vol_m5 = float(dex_data.get("volume_m5", 0) or 0)
+        score = int(dex_data.get("score", 0) or 0)
 
-        if fdv > 0 and (liquidity_usd / fdv) < 0.08:
-            return False, "Ratio Liquidità/MC sospetto (Meno dell'8%)"
+        if liquidity_usd < Config.MIN_LIQUIDITY:
+            return False, f"Liquidita troppo bassa (${liquidity_usd:,.0f} < ${Config.MIN_LIQUIDITY:,.0f})"
+
+        if fdv > 0 and fdv < Config.MIN_MARKET_CAP:
+            return False, f"Market cap troppo basso (${fdv:,.0f})"
+
+        if fdv > Config.MAX_MARKET_CAP:
+            return False, f"Market cap troppo alto (${fdv:,.0f})"
+
+        if fdv > 0 and (liquidity_usd / fdv) < 0.10:
+            return False, "Ratio liquidita/MC < 10% (sospetto)"
+
+        if buys < Config.MIN_BUYS_M5:
+            return False, f"Troppi pochi buy in 5m ({buys} < {Config.MIN_BUYS_M5})"
+
+        if sells > 0 and buys < sells * Config.MIN_BUY_SELL_RATIO:
+            return False, f"Pressione vendita (buys {buys} / sells {sells})"
+
+        if vol_m5 < Config.MIN_VOLUME_M5:
+            return False, f"Volume 5m basso (${vol_m5:,.0f})"
+
+        if score < Config.MIN_ENTRY_SCORE:
+            return False, f"Score troppo basso ({score} < {Config.MIN_ENTRY_SCORE})"
+
+        if buys > 25 and sells == 0:
+            return False, "Possibile honeypot (0 sell con tanti buy)"
 
         if self.rpc_url:
-            has_authority, auth_reason = await self._check_onchain_authorities(token_address)
-            if not has_authority:
-                return False, auth_reason
-
-        is_safe_distribution, dist_reason = await self._check_holder_distribution(token_address)
-        if not is_safe_distribution:
-            return False, dist_reason
+            ok, reason = await self._check_onchain_authorities(token_address)
+            if not ok:
+                return False, reason
 
         return True, "SAFE"
 
@@ -36,43 +56,25 @@ class AntiRugEngine:
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getAccountInfo",
-            "params": [token_address, {"encoding": "jsonParsed"}]
+            "params": [token_address, {"encoding": "jsonParsed"}],
         }
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
                 res = await client.post(self.rpc_url, json=payload)
-                if res.status_code == 200:
-                    data = res.json()
-                    parsed_info = data.get("result", {}).get("value", {}).get("data", {}).get("parsed", {}).get("info", {})
-                    
-                    if parsed_info.get("mintAuthority") is not None:
-                        return False, "Mint Authority ATTIVA (Rischio inflazione)"
-                    
-                    if parsed_info.get("freezeAuthority") is not None:
-                        return False, "Freeze Authority ATTIVA (Rischio blocco wallet)"
+                if res.status_code != 200:
+                    return True, "OK"
+                data = res.json()
+                parsed = (
+                    data.get("result", {})
+                    .get("value", {})
+                    .get("data", {})
+                    .get("parsed", {})
+                    .get("info", {})
+                )
+                if parsed.get("mintAuthority") is not None:
+                    return False, "Mint Authority attiva"
+                if parsed.get("freezeAuthority") is not None:
+                    return False, "Freeze Authority attiva"
         except Exception as e:
             logger.error(f"Errore RPC Helius: {e}")
-        return True, "OK"
-
-    async def _check_holder_distribution(self, token_address: str) -> tuple[bool, str]:
-        try:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                res = await client.get(url)
-                if res.status_code == 200:
-                    data = res.json()
-                    pairs = data.get("pairs")
-                    if pairs:
-                        txns = pairs[0].get("txns", {}).get("m5", {})
-                        buys = txns.get("buys", 0)
-                        sells = txns.get("sells", 0)
-
-                        if buys > 20 and sells == 0:
-                            return False, "HONEYPOT RILEVATO (0 vendite)"
-                        
-                        if buys > 10 and (sells / buys) < 0.05:
-                            return False, "RAPPORTO SELL/BUY SOSPETTO (<5% vendite)"
-        except Exception as e:
-            logger.error(f"Errore distribution: {e}")
-
         return True, "OK"

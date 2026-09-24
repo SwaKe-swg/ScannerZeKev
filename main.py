@@ -1,4 +1,5 @@
 import asyncio
+import time
 import logging
 import httpx
 
@@ -27,6 +28,8 @@ helius_url = getattr(Config, "HELIUS_RPC_URL", "")
 anti_rug = AntiRugEngine(rpc_url=helius_url)
 
 START_BUDGET = float(getattr(Config, "VIRTUAL_SOL_BALANCE", 0.30))
+last_entry_ts = 0.0
+
 virtual_wallet = PositionManager(
     initial_balance=START_BUDGET,
     trade_amount=getattr(Config, "TRADE_AMOUNT_SOL", 0.03),
@@ -72,24 +75,35 @@ async def send_startup_notification():
         if Config.REAL_TRADING
         else "PAPER (simulazione, niente SOL veri)"
     )
-    tp = getattr(Config, "TAKE_PROFIT_PCT", 100.0)
-    sl = getattr(Config, "STOP_LOSS_PCT", -30.0)
-    msg = (
-        f"<b>Zephyr Bot 2.0 avviato</b>\n\n"
-        f"<b>Modalita:</b> {mode}\n"
-        f"<b>Budget di partenza:</b> {START_BUDGET:.4f} SOL "
-        f"(soldi virtuali con cui inizia)\n"
-        f"<b>Ogni ingresso:</b> {virtual_wallet.trade_amount:.4f} SOL "
-        f"(+{Config.ESTIMATED_FEE_SOL} SOL di fee stimate)\n"
-        f"<b>Slippage stimato:</b> {Config.SLIPPAGE_BPS / 100}% "
-        f"(peggioramento prezzo all'ingresso/uscita)\n\n"
-        f"<b>Quando chiude da solo:</b>\n"
-        f"• Take profit a <b>+{tp:.0f}%</b> (raddoppio → chiude in guadagno)\n"
-        f"• Stop loss a <b>{sl:.0f}%</b> (taglia la perdita)\n"
-        f"• Trailing stop se prima era salito molto "
-        f"(protegge parte del guadagno)\n\n"
-        f"Ogni ~3 minuti arriva un report sul portafoglio."
-    )
+    tp = getattr(Config, "TAKE_PROFIT_PCT", 35.0)
+    sl = getattr(Config, "STOP_LOSS_PCT", -15.0)
+    lines = [
+        "<b>Zephyr Bot 2.1 — filtri piu stretti</b>",
+        "",
+        f"<b>Modalita:</b> {mode}",
+        f"<b>Budget:</b> {START_BUDGET:.4f} SOL",
+        (
+            f"<b>Ogni ingresso:</b> {virtual_wallet.trade_amount:.4f} SOL "
+            f"(max {getattr(Config, 'MAX_OPEN_POSITIONS', 2)} posizioni aperte)"
+        ),
+        f"<b>Cooldownoldown:</b> {getattr(Config, 'COOLDOWN_SECONDS', 90)}s tra un buy e l'altro",
+        "",
+        "<b>Entra solo se:</b>",
+        f"• liquidita >= ${getattr(Config, 'MIN_LIQUIDITY', 12000):,.0f}",
+        (
+            f"• market cap tra ${getattr(Config, 'MIN_MARKET_CAP', 20000):,.0f} "
+            f"e ${getattr(Config, 'MAX_MARKET_CAP', 250000):,.0f}"
+        ),
+        f"• almeno {getattr(Config, 'MIN_BUYS_M5', 8)} buy in 5 min + volume",
+        f"• score >= {getattr(Config, 'MIN_ENTRY_SCORE', 60)}",
+        "• mint/freeze authority off",
+        "",
+        f"<b>Uscite:</b> TP +{tp:.0f}% | SL {sl:.0f}% | trailing da +6%",
+        "",
+        "<i>Nota: sui meme coin molti bot perdono in media. Questi filtri "
+        "servono a perdere meno spesso, non a garantire guadagno.</i>",
+    ]
+    msg = chr(10).join(lines)
     async with httpx.AsyncClient() as client:
         await send_telegram_msg(client, msg)
 
@@ -104,9 +118,18 @@ async def process_detected_token(token_data: dict):
         logger.warning(f"[RUGPULL EVITATO] ${symbol} scartato -> {reason}")
         return
 
+    global last_entry_ts
+    now = time.time()
+    cooldown = float(getattr(Config, "COOLDOWN_SECONDS", 90))
+    if now - last_entry_ts < cooldown:
+        logger.info(f"Cooldownoldown attivo, skip ${symbol}")
+        return
+
     trade_info = virtual_wallet.open_virtual_trade(token_address, symbol, price_usd)
     if not trade_info:
         return
+
+    last_entry_ts = now
 
     links_html = build_trading_links_text(token_address)
     msg = (
@@ -168,7 +191,7 @@ async def live_pnl_monitor():
                     f"<b>Variazione prezzo:</b> {c['pnl_pct']:+.2f}% (gia tolte fee e slippage)",
                     f"<b>Soldi liberi ora:</b> {virtual_wallet.get_balance():.4f} SOL",
                     "",
-                    "<i>Regole attuali: stop loss -12%, take profit +50%, trailing se era salito; ogni ingresso 0.02 SOL.</i>",
+                    "<i>Regole 2.1: SL -15%, TP +35%, max 2 posizioni, ingresso 0.015 SOL, filtri hard+score.</i>",
                 ]
                 msg = chr(10).join(lines)
                 await send_telegram_msg(client, msg)
