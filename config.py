@@ -13,15 +13,15 @@ class Config:
 
     # --- PARAMETRI DI BUDGET ---
     VIRTUAL_SOL_BALANCE = float(os.getenv("VIRTUAL_SOL_BALANCE", "0.30"))
-    TRADE_AMOUNT_SOL = float(os.getenv("TRADE_AMOUNT_SOL", "0.03"))
+    TRADE_AMOUNT_SOL = float(os.getenv("TRADE_AMOUNT_SOL", "0.02"))
 
     # --- PROTEZIONE REALE (SLIPPAGE & FEES) ---
     SLIPPAGE_BPS = int(os.getenv("SLIPPAGE_BPS", "150"))
     ESTIMATED_FEE_SOL = float(os.getenv("ESTIMATED_FEE_SOL", "0.0015"))
 
     # --- TARGET PROFIT E LOSS ---
-    TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "100.0"))
-    STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "-30.0"))
+    TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "50.0"))
+    STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "-12.0"))
 
     # --- TELEGRAM ---
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")

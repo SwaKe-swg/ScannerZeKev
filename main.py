@@ -131,7 +131,7 @@ async def live_pnl_monitor():
     report_counter = 0
     async with httpx.AsyncClient() as client:
         while True:
-            await asyncio.sleep(15)
+            await asyncio.sleep(8)
             report_counter += 1
 
             open_pos, closed_pos = await virtual_wallet.update_positions_pnl(
@@ -143,27 +143,45 @@ async def live_pnl_monitor():
             for c in closed_pos:
                 status = c["status"]
                 pnl_usd = c["pnl_sol"] * 135
+                buy = c.get("buy_sol", 0.0)
                 won = c["pnl_sol"] >= 0
-                esito_human = (
-                    "Hai guadagnato (paper)"
-                    if won
-                    else "Hai perso (paper)"
-                )
+                if won:
+                    titolo = "Chiusura in guadagno (paper)"
+                    plain = (
+                        f"Hai recuperato il capitale investito e in piu "
+                        f"{c['pnl_sol']:+.4f} SOL (circa {pnl_usd:+.2f} $)."
+                    )
+                else:
+                    titolo = "Chiusura in perdita (paper)"
+                    plain = (
+                        f"Hai perso {abs(c['pnl_sol']):.4f} SOL "
+                        f"(circa {abs(pnl_usd):.2f} $) su {buy:.4f} SOL investiti. "
+                        f"Niente soldi veri: e solo simulazione."
+                    )
                 msg = (
-                    f"<b>Posizione chiusa: ${c['symbol']}</b>\n\n"
-                    f"<b>Esito:</b> {esito_human}\n"
-                    f"<b>Motivo chiusura:</b> {status}\n"
-                    f"<b>Risultato %:</b> {c['pnl_pct']:+.2f}% "
-                    f"(dopo fee e slippage)\n"
-                    f"<b>Risultato in SOL:</b> {c['pnl_sol']:+.4f} SOL "
-                    f"(circa ~{pnl_usd:+.2f} $)\n"
+                    f"<b>{titolo}</b>
+"
+                    f"Token: <b>${c['symbol']}</b>
+
+"
+                    f"{plain}
+
+"
+                    f"<b>Perche ha chiuso:</b> {status}
+"
+                    f"<b>Variazione prezzo:</b> {c['pnl_pct']:+.2f}% "
+                    f"(gia tolte fee e slippage)
+"
                     f"<b>Soldi liberi ora:</b> "
-                    f"{virtual_wallet.get_balance():.4f} SOL\n\n"
-                    f"Questo e il guadagno/perdita 'ufficiale' della simulazione."
+                    f"{virtual_wallet.get_balance():.4f} SOL
+
+"
+                    f"<i>Regole attuali: stop loss -12%, take profit +50%, "
+                    f"trailing se era salito; ogni ingresso 0.02 SOL.</i>"
                 )
                 await send_telegram_msg(client, msg)
 
-            if report_counter >= 12 and open_pos:
+            if report_counter >= 15 and open_pos:
                 report_counter = 0
                 total_eq = virtual_wallet.get_total_equity_sol()
                 free = virtual_wallet.get_balance()
@@ -172,7 +190,7 @@ async def live_pnl_monitor():
                 vs_start_pct = (vs_start / START_BUDGET) * 100.0 if START_BUDGET else 0.0
 
                 lines = [
-                    "<b>Report portafoglio PAPER</b> (ogni ~3 min)",
+                    "<b>Report portafoglio PAPER</b> (ogni ~2 min)",
                     "",
                     f"<b>Totale stimato ora:</b> {total_eq:.4f} SOL",
                     "  = soldi liberi + valore attuale delle posizioni aperte",

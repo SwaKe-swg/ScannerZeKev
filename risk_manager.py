@@ -14,7 +14,7 @@ class PositionManager:
     def open_virtual_trade(self, token_address: str, symbol: str, raw_price_usd: float) -> dict:
         total_cost = self.trade_amount + Config.ESTIMATED_FEE_SOL
         if self.balance < total_cost:
-            logger.warning(f"⚠️ Saldo insufficiente ({self.balance:.4f} SOL) incluso fee ({Config.ESTIMATED_FEE_SOL} SOL) per ${symbol}")
+            logger.warning(f"âš ï¸ Saldo insufficiente ({self.balance:.4f} SOL) incluso fee ({Config.ESTIMATED_FEE_SOL} SOL) per ${symbol}")
             return None
 
         self.balance -= total_cost
@@ -32,7 +32,7 @@ class PositionManager:
             "status": "OPEN"
         }
         self.positions[token_address] = trade_info
-        logger.info(f"🧪 [BUY] ${symbol} @ ${execution_price:.8f} (Slippage: {Config.SLIPPAGE_BPS/100}% | Fee: {Config.ESTIMATED_FEE_SOL} SOL)")
+        logger.info(f"ðŸ§ª [BUY] ${symbol} @ ${execution_price:.8f} (Slippage: {Config.SLIPPAGE_BPS/100}% | Fee: {Config.ESTIMATED_FEE_SOL} SOL)")
         return trade_info
 
     async def get_fast_price(self, client: httpx.AsyncClient, token_address: str, default_price: float) -> float:
@@ -80,23 +80,36 @@ class PositionManager:
                     if raw_pnl_pct > pos["max_pnl_reached"]:
                         pos["max_pnl_reached"] = raw_pnl_pct
 
-                # Trailing Stop Loss Dinamico
+                # Trailing stop: blocca prima i guadagni, taglia prima le perdite
                 dynamic_stop_loss = initial_stop_loss_pct
                 max_p = pos["max_pnl_reached"]
 
-                if max_p >= 80.0:
-                    dynamic_stop_loss = 50.0
-                elif max_p >= 50.0:
+                if max_p >= 40.0:
                     dynamic_stop_loss = 20.0
-                elif max_p >= 30.0:
+                elif max_p >= 25.0:
+                    dynamic_stop_loss = 10.0
+                elif max_p >= 15.0:
                     dynamic_stop_loss = 5.0
+                elif max_p >= 8.0:
+                    dynamic_stop_loss = 0.0
 
                 # Chiusura Posizioni
                 if raw_pnl_pct >= take_profit_pct or raw_pnl_pct <= dynamic_stop_loss:
                     is_tp = raw_pnl_pct >= take_profit_pct
-                    pos["status"] = "TAKE_PROFIT (+100%)" if is_tp else (f"TRAILING STOP ({raw_pnl_pct:+.1f}%)" if dynamic_stop_loss > initial_stop_loss_pct else "STOP LOSS")
-                    
-                    # Penalità Slippage in vendita e sottrazione Priority Fee
+                    if is_tp:
+                        pos["status"] = f"TAKE PROFIT (obiettivo +{take_profit_pct:.0f}%)"
+                    elif dynamic_stop_loss > initial_stop_loss_pct:
+                        pos["status"] = (
+                            f"TRAILING STOP (aveva toccato {max_p:+.1f}%, "
+                            f"chiuso a {raw_pnl_pct:+.1f}%)"
+                        )
+                    else:
+                        pos["status"] = (
+                            f"STOP LOSS (limite {initial_stop_loss_pct:.0f}%, "
+                            f"chiuso a {raw_pnl_pct:+.1f}%)"
+                        )
+
+                    # PenalitÃ  Slippage in vendita e sottrazione Priority Fee
                     exit_price_after_slippage = current_price / self.slippage_factor
                     realized_pnl_pct = ((exit_price_after_slippage - entry) / entry) * 100.0
                     realized_pnl_sol = pos["buy_sol"] * (realized_pnl_pct / 100.0)
